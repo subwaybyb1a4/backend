@@ -5,7 +5,7 @@
 import requests
 import webbrowser
 
-APP_KEY = "---- sk open ai app key ----"
+APP_KEY = "-----sk-openapi-app-key-----"
 
 
 # 1. 사용자 입력
