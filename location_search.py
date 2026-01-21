@@ -1,7 +1,7 @@
 import requests
 import webbrowser
 
-APP_KEY = "k9SiBHJ8U25AL7rsT2wYX8LLuw6wcqLY1mwo5z2U"
+APP_KEY = "-----sk-openapi-app-key-----"
 
 
 # 1. 사용자 입력
