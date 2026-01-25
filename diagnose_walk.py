@@ -1,5 +1,5 @@
 import requests
-import json
+import json 
 
 def diagnose():
     url = "http://localhost:8000/api/v1/routes"
