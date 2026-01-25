@@ -1,6 +1,6 @@
 import requests
 import json
-
+ 
 def verify():
     url = "http://localhost:8000/api/v1/routes"
     params = {"departure": "서울역", "arrival": "강남역"}
