@@ -1,6 +1,6 @@
 from app.services.fast_transfer_service import FastTransferService
 import sys
-
+ 
 def verify():
     print("Initializing FastTransferService...")
     service = FastTransferService()
