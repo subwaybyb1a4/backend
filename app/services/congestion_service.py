@@ -175,15 +175,44 @@ class CongestionService:
         score += self.peak_congestion_penalty(segment_details)
         score += self.max_congestion_penalty(segment_details)
         score += self.short_segment_penalty(route)
+        
+        # Calculate Average Congestion for Level Label (0-100 scale)
+        if segment_details:
+             avg_c = sum(s["congestion"] for s in segment_details) / len(segment_details)
+        else:
+             avg_c = 0.0
 
+        # Return (Weighted Score, Details, Avg Congestion)
+        # Note: Previous signature returned (score, details). 
+        # I need to accommodate this change in API call or update this method to just return score, details 
+        # and handle level calculation separately?
+        # A cleaner way: Update 'get_congestion_level' to accept score? NO, level should be based on density.
+        # Let's attach 'avg_congestion' to the details or return it.
+        # But 'calculate_route_score' is used in routes.py.
+        # I will attach 'avg_congestion' to details metadata?
+        # Or I can just calculate avg_congestion in routes.py from details.
+        # Actually, let's keep 'calculate_route_score' signature simple, but make it return score.
+        # Wait, the user complaint is about 'min_crowding' LABEL.
+        # routes.py calls: score, details = service.calculate_route_score(r)
+        # then: level = service.get_congestion_level(score)
+        # The 'score' is weighted.
+        # I should change 'get_congestion_level' to take 'score' meant for level.
+        # I will change 'calculate_route_score' to return (score, details, avg_congestion).
+        # But that breaks signature.
+        # I will modify routes.py to calculate avg from details.
+        
         return round(score, 2), segment_details
 
     def get_congestion_level(self, score: float) -> str:
-        """점수를 혼잡도 레벨로 변환"""
-        if score < 1000:
+        """
+        점수를 혼잡도 레벨로 변환
+        Legacy: score was weighted.
+        New: score should be 'average congestion' (0-100).
+        """
+        if score < 30:
             return "여유 🟢"
-        elif score < 1300:
+        elif score < 50:
             return "보통 🟡"
-        elif score < 1600:
+        elif score < 70:
             return "혼잡 🟠"
         return "매우 혼잡 🔴"

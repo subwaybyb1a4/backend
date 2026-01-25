@@ -4,6 +4,7 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import Optional, List
 import uuid
+import hashlib
 from datetime import datetime, timedelta
 from app.schemas.route import (
     RouteResponse, StationInfo, Route, RouteType, 
@@ -13,6 +14,7 @@ from app.services.route_service import RouteService, ComfortRouteService
 from app.services.odsay_service import ODSayService
 from app.services.congestion_service import CongestionService
 from app.services.llm_service import LLMService
+from app.services.fast_transfer_service import FastTransferService
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 
@@ -39,8 +41,21 @@ def get_comfort_route_service(route_service: RouteService = Depends(get_route_se
     return ComfortRouteService(route_service=route_service)
 
 
-def map_route_to_detail(route: Route) -> RouteDetail:
+def get_fast_transfer_service() -> FastTransferService:
+    """빠른 환승 서비스 의존성 주입"""
+    return FastTransferService()
+
+
+def map_route_to_detail(route: Route, fast_transfer_service: FastTransferService = None) -> RouteDetail:
     """Route 객체를 RouteDetail(Client용)로 변환"""
+    
+    # Generate deterministic route_id from route signature
+    route_signature = tuple(
+        (seg.from_station.station_id, seg.to_station.station_id, seg.line_number)
+        for seg in route.segments
+    )
+    signature_str = str(route_signature)
+    route_id = hashlib.md5(signature_str.encode()).hexdigest()
     
     # 1. Total Time (minutes)
     total_time = round(route.total_duration / 60)
@@ -79,6 +94,7 @@ def map_route_to_detail(route: Route) -> RouteDetail:
         
         start_name = None
         end_name = None
+        fast_transfer_door = None
         
         if is_walk_seg:
             seg_type = SegmentType.WALK
@@ -88,10 +104,52 @@ def map_route_to_detail(route: Route) -> RouteDetail:
             label = seg.line_number
             if "수도권" in label:
                 label = label.replace("수도권 ", "")
+            if "호선" in label:
+                label = label.replace("호선", "")
             
             # Populate start/end names for subway segments
             start_name = seg.from_station.station_name
             end_name = seg.to_station.station_name
+            
+            # Check for Fast Transfer Info (if next segment implies transfer)
+            # Conditions:
+            # 1. Current is Subway
+            # 2. Next segment exists and logic says it's a transfer flow (different line)
+            # OR checking transfer info.
+            
+            # Look ahead for transfer
+            if i < len(route.segments) - 1:
+                next_seg = route.segments[i+1]
+                # If next is SUBWAY (with diff line) -> Transfer happens at 'end_name'
+                # If next is WALK (Transfer Walk) -> Transfer happens at 'end_name'
+                
+                # Logic: If I am getting off at 'end_name' to transfer to 'next_line'
+                # Find 'next_line'
+                next_line = None
+                if next_seg.line_number == "도보":
+                    # Look further ahead for the line we are transferring TO
+                    if i + 2 < len(route.segments):
+                         next_next_seg = route.segments[i+2]
+                         if next_next_seg.line_number != "도보":
+                             next_line = next_next_seg.line_number
+                else:
+                    if next_seg.line_number != seg.line_number:
+                        next_line = next_seg.line_number
+                
+                if next_line:
+                    # Clean line names for matching ("수도권 4호선" -> "4호선")
+                    curr_line_clean = seg.line_number.replace("수도권 ", "")
+                    next_line_clean = next_line.replace("수도권 ", "")
+                    
+                    if fast_transfer_service:
+                         door = fast_transfer_service.get_fast_transfer(
+                             station_name=end_name,
+                             station_id=seg.to_station.station_id,
+                             from_line=curr_line_clean,
+                             to_line=next_line_clean
+                         )
+                         if door:
+                             fast_transfer_door = door
 
         # Duration in minutes
         minutes = round(seg.duration / 60)
@@ -104,7 +162,8 @@ def map_route_to_detail(route: Route) -> RouteDetail:
             label=label, 
             minutes=minutes,
             start_station_name=start_name,
-            end_station_name=end_name
+            end_station_name=end_name,
+            fast_transfer_door=fast_transfer_door
         ))
         
         # Insert Transfer if needed
@@ -133,6 +192,7 @@ def map_route_to_detail(route: Route) -> RouteDetail:
         summary = route.comfort_explanation
 
     return RouteDetail(
+        route_id=route_id,
         congestion_status=congestion_status,
         total_time=total_time,
         arrival_time=arrival_time,
@@ -148,7 +208,8 @@ async def get_routes(
     departure: str = Query(..., description="출발역 이름 또는 ID"),
     arrival: str = Query(..., description="도착역 이름 또는 ID"),
     route_service: RouteService = Depends(get_route_service),
-    comfort_route_service: ComfortRouteService = Depends(get_comfort_route_service)
+    comfort_route_service: ComfortRouteService = Depends(get_comfort_route_service),
+    fast_transfer_service: FastTransferService = Depends(get_fast_transfer_service)
 ):
     """
     경로 조회 API (Structured Response)
@@ -175,7 +236,14 @@ async def get_routes(
         for r in [fastest_route, min_walk_route]:
             try:
                 score, details = congestion_service.calculate_route_score(r)
-                level = congestion_service.get_congestion_level(score)
+                
+                # Calculate Average Congestion for Level Label (0-100)
+                if details:
+                    avg_c = sum(d["congestion"] for d in details) / len(details)
+                else:
+                    avg_c = 0.0
+                
+                level = congestion_service.get_congestion_level(avg_c)
                 r.congestion_score = score
                 r.congestion_level = level
                 
@@ -191,6 +259,29 @@ async def get_routes(
         # If list is empty, fallback to fastest
         best_comfort = None
         
+        # Helper to generate signature
+        def get_route_signature(r: Route):
+            return tuple(
+                (seg.from_station.station_id, seg.to_station.station_id, seg.line_number)
+                for seg in r.segments
+            )
+
+        fastest_sig = get_route_signature(fastest_route)
+        min_walk_sig = get_route_signature(min_walk_route)
+        
+        # Check for Duplicate: Fastest == MinWalk
+        if fastest_sig == min_walk_sig and comfort_candidates:
+             print("[API] 최단 경로와 최소 도보 경로가 동일함. 대체 최소 도보 경로 탐색 시도.")
+             # Find alternative from candidates
+             # Sort by walking time (asc), then total duration (asc)
+             alt_candidates = [c for c in comfort_candidates if get_route_signature(c) != fastest_sig]
+             if alt_candidates:
+                 alt_candidates.sort(key=lambda x: (x.total_walking_time, x.total_duration))
+                 best_alt_walk = alt_candidates[0]
+                 print(f"[API] 대체 최소 도보 경로 발견: 도보 {best_alt_walk.total_walking_time}초")
+                 min_walk_route = best_alt_walk
+                 min_walk_sig = get_route_signature(min_walk_route)
+        
         if not comfort_candidates:
             # Fallback: Just use fastest as comfort? Or clone it?
             best_comfort = fastest_route.model_copy()
@@ -201,24 +292,40 @@ async def get_routes(
             for c in comfort_candidates:
                 try:
                     score, details = congestion_service.calculate_route_score(c)
-                    level = congestion_service.get_congestion_level(score)
+                    
+                    # Calculate Average Congestion for Level Label (0-100)
+                    if details:
+                        avg_c = sum(d["congestion"] for d in details) / len(details)
+                    else:
+                        avg_c = 0.0
+                    
+                    level = congestion_service.get_congestion_level(avg_c)
                     c.congestion_score = score
                     c.congestion_level = level
-                    # LLM desc might be expensive to run for ALL.
-                    # ComfortRouteService already generated comfort_explanation?
-                    # Let's check: comfort_candidates has comfort_explanation populated in service.
                 except Exception as e:
                     print(f"Error processing comfort candidate: {e}")
             
             # Sort by Congestion Score (Ascending), then Total Duration
-            # Filter valid scores if possible
             valid_candidates = [c for c in comfort_candidates if c.congestion_score is not None]
             if not valid_candidates:
                 valid_candidates = comfort_candidates
                 
             valid_candidates.sort(key=lambda x: (x.congestion_score or 1.0, x.total_duration))
             
+            # Default best
             best_comfort = valid_candidates[0]
+            best_comfort_sig = get_route_signature(best_comfort)
+            
+            # Check for Triple Duplicate: Fastest == MinWalk == Comfort
+            if fastest_sig == min_walk_sig and fastest_sig == best_comfort_sig:
+                print(f"[API] 3가지 경로가 모두 동일함. 대체 경로 탐색 시도.")
+                # Try to find a candidate that is NOT same as fastest (which is also min_walk)
+                for cand in valid_candidates:
+                    cand_sig = get_route_signature(cand)
+                    if cand_sig != fastest_sig:
+                        print(f"[API] 대체 경로 발견: score={cand.congestion_score}")
+                        best_comfort = cand
+                        break
             
             # If best_comfort doesn't have explanation (maybe logic skipped it), generate it
             if not best_comfort.comfort_explanation:
@@ -235,9 +342,9 @@ async def get_routes(
                     pass
 
         # Map to Detail Models
-        min_time_detail = map_route_to_detail(fastest_route)
-        min_walking_detail = map_route_to_detail(min_walk_route)
-        min_crowding_detail = map_route_to_detail(best_comfort)
+        min_time_detail = map_route_to_detail(fastest_route, fast_transfer_service)
+        min_walking_detail = map_route_to_detail(min_walk_route, fast_transfer_service)
+        min_crowding_detail = map_route_to_detail(best_comfort, fast_transfer_service)
         
         return SearchResponse(
             search_group_id=search_group_id,

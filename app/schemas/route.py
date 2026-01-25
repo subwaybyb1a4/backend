@@ -90,8 +90,10 @@ class SegmentResponse(BaseModel):
     minutes: int = Field(..., description="구간 소요 시간 (분)")
     start_station_name: Optional[str] = Field(None, description="출발역 이름 (지하철 타입일 경우 필수)")
     end_station_name: Optional[str] = Field(None, description="도착역 이름 (지하철 타입일 경우 필수)")
+    fast_transfer_door: Optional[str] = Field(None, description="빠른 환승 위치 (예: '5-1')")
 
 class RouteDetail(BaseModel):
+    route_id: str = Field(..., description="경로 고유 ID")
     congestion_status: str = Field(..., description="혼잡도 배지 내용 (여유, 보통, 혼잡)")
     total_time: int = Field(..., description="총 소요 시간 (분)")
     arrival_time: str = Field(..., description="도착 시각 (HH:MM)")

@@ -44,29 +44,45 @@ class LLMService:
         return []
     
     def retrieve_congestion_rules(self, route_data: Dict[str, Any]) -> str:
-        """RAG에서 혼잡 참고 데이터 검색"""
+        """RAG에서 혼잡 참고 데이터 검색 (실제 환승역만 매칭)"""
         if not self.congestion_chunks:
             return ""
 
-        keywords = []
-        segments = route_data.get("segments", [])
-        for seg in segments:
-            time_str = route_data.get("time_str", "09:00")
-            if int(time_str.split(":")[0]) in [7, 8, 9, 18, 19]:
-                station_name = seg.get("from_station", {}).get("station_name", "")
-                line = seg.get("line_number", "")
-                keywords.append(f"{time_str} {station_name} {line} 환승")
+        # 실제 환승이 발생하는 역만 수집 (transfers 정보 활용)
+        transfers = route_data.get("transfers", [])
+        transfer_stations = set()
+        for transfer in transfers:
+            station_name = transfer.get("station", {}).get("station_name", "")
+            if station_name:
+                transfer_stations.add(station_name.replace("역", "").strip())
+        
+        # 환승이 없으면 RAG 불필요
+        if not transfer_stations:
+            return ""
 
-        keywords = list(dict.fromkeys(keywords))  # 중복 제거
+        # 시간대 확인
+        time_str = route_data.get("time_str", "09:00")
+        try:
+            hour = int(time_str.split(":")[0])
+            is_peak = hour in [7, 8, 9, 18, 19]
+        except:
+            is_peak = False
+        
+        if not is_peak:
+            return ""
 
+        # 실제 환승역이 포함된 청크만 검색
         retrieved_texts = []
-        for kw in keywords[:3]:  # 최대 3개만
-            for chunk in self.congestion_chunks:
-                if kw.lower() in chunk.page_content.lower():
-                    retrieved_texts.append(chunk.page_content)
-
-        if not retrieved_texts and self.congestion_chunks:
-            retrieved_texts.append(self.congestion_chunks[0].page_content)
+        for chunk in self.congestion_chunks:
+            chunk_text = chunk.page_content
+            # 청크에 환승역 이름이 포함되어 있는지 확인
+            for station in transfer_stations:
+                if station in chunk_text:
+                    retrieved_texts.append(chunk_text)
+                    break  # 하나라도 매칭되면 추가하고 다음 청크로
+            
+            if len(retrieved_texts) >= 3:  # 최대 3개
+                break
 
         return "\n".join(retrieved_texts)
     
@@ -119,11 +135,17 @@ class LLMService:
 - 최대 혼잡도: {max_congestion:.1f}%
 
 조건:
-- 문장은 "이번 열차는 여유롭네요!"처럼 체감 위주로 시작
+- 2-3문장으로 구성 (최대 150자)
+- 첫 문장: 전체적인 혼잡도 체감 표현 (예: "이번 열차는 여유롭네요!", "약간 붐빌 수 있어요")
+- 둘째 문장: 구체적인 팁이나 주의사항 (환승역 혼잡도, 빠른 환승 위치, 시간대별 특징 등)
+- 셋째 문장(선택): 추가 조언이나 대안 제시
 - 혼잡 참고 데이터에 언급된 역이 있으면 반드시 반영
-- 환승역에서는 사람이 많을 수 있음을 언급
-- 칸별 빠른 환승 위치 힌트 포함 가능
-- 최대 100자
+- 친근하고 실용적인 톤 유지
+
+예시:
+- "이번 열차는 여유롭네요! 약수역 환승은 6-3 칸을 이용하면 빠르게 갈아탈 수 있어요."
+- "출근 시간대라 약간 붐빌 수 있어요. 약수역 환승 시 앞쪽 칸 이용을 추천드려요."
+- "전반적으로 쾌적한 경로예요! 다만 저녁 시간대 환승역은 사람이 많을 수 있으니 여유있게 출발하세요."
 
 설명:
 """
@@ -131,17 +153,17 @@ class LLMService:
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
-                    {"role": "system", "content": "당신은 지하철 경로 안내 전문가입니다. 간결하고 명확하게 설명합니다."},
+                    {"role": "system", "content": "당신은 지하철 경로 안내 전문가입니다. 친근하고 실용적인 조언을 제공합니다."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=150,
-                temperature=0.7,
+                max_tokens=250,
+                temperature=0.8,
             )
             
             description = response.choices[0].message.content.strip()
             
-            if len(description) > 100:
-                description = description[:100] + "..."
+            if len(description) > 150:
+                description = description[:150] + "..."
             
             if not description or len(description) < 10:
                 return self._generate_rule_based_description(
@@ -240,6 +262,12 @@ class LLMService:
             avg_congestion = congestion_data.get("avg_congestion", 0.5)
             congestion_level = congestion_data.get("congestion_level", "보통")
             
+            # 시간 차이 표현
+            if time_diff_minutes == 0:
+                time_comparison = "최단 경로와 동일한 시간이 소요됩니다"
+            else:
+                time_comparison = f"최단 경로 대비 {time_diff_minutes}분 추가 소요됩니다"
+            
             # 경로 구간 정보 요약
             segments_summary = []
             for segment in route_info.get("segments", []):
@@ -255,25 +283,27 @@ class LLMService:
             transfers_count = len(route_info.get("transfers", []))
             
             prompt = f"""당신은 지하철 경로 추천 서비스의 설명 생성 AI입니다. 
-사용자에게 시간부자 전용 경로의 편안함을 친근하고 이해하기 쉽게 설명해주세요.
+사용자에게 시간부자 전용 경로의 편안함을 친근하고 구체적으로 설명해주세요.
 
 경로 정보:
 - 최단 경로 소요 시간: {fastest_duration // 60}분
 - 시간부자 경로 소요 시간: {comfort_duration // 60}분
-- 추가 소요 시간: {time_diff_minutes}분
+- 시간 비교: {time_comparison}
 - 평균 혼잡도: {congestion_level} (점수: {avg_congestion:.2f})
 - 경로 구간: {len(segments_summary)}개
 - 환승 횟수: {transfers_count}회
 
 요구사항:
-1. 한 문장으로 간결하게 설명
-2. 친근하고 자연스러운 톤
-3. 혼잡도와 시간 차이를 명확히 언급
-4. 사용자가 이 경로를 선택할 이유를 강조
+1. 2-3문장으로 구성 (최대 150자)
+2. 첫 문장: 이 경로의 주요 장점 (혼잡도, 편안함 등)
+3. 둘째 문장: 시간 비교와 구체적인 이유
+4. 셋째 문장(선택): 추가 팁이나 추천 이유
+5. 친근하고 자연스러운 톤
 
 예시 스타일:
-- "이 경로는 평균 혼잡도가 낮아 여유롭게 이동할 수 있습니다. 최단 경로보다 {time_diff_minutes}분 정도 더 소요되지만, 체감 스트레스가 적습니다."
-- "주요 구간의 혼잡도가 낮아 상대적으로 편안하게 이동할 수 있습니다. 최단 경로 대비 {time_diff_minutes}분 추가 소요됩니다."
+- "이 경로는 평균 혼잡도가 낮아 여유롭게 이동할 수 있습니다. {time_comparison}. 출퇴근 시간대에도 비교적 쾌적해요."
+- "주요 구간의 혼잡도가 낮아 편안한 이동이 가능합니다. {time_comparison}. 앉아서 갈 확률도 높아요!"
+- "쾌적한 경로예요! {time_comparison}. 환승도 여유롭게 할 수 있어 스트레스가 적습니다."
 
 설명을 생성해주세요:"""
 
@@ -283,15 +313,15 @@ class LLMService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "당신은 지하철 경로 추천 서비스의 설명 생성 전문가입니다. 사용자에게 친근하고 이해하기 쉬운 한 문장 설명을 제공합니다."
+                        "content": "당신은 지하철 경로 추천 서비스의 설명 생성 전문가입니다. 사용자에게 친근하고 구체적인 조언을 제공합니다."
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                temperature=0.7,
-                max_tokens=150
+                temperature=0.8,
+                max_tokens=250
             )
             
             explanation = response.choices[0].message.content.strip()
@@ -303,9 +333,15 @@ class LLMService:
             time_diff = (comfort_duration - fastest_duration) // 60
             avg_congestion = congestion_data.get("avg_congestion", 0.5)
             
-            if avg_congestion < 0.4:
-                return f"이 경로는 평균 혼잡도가 낮아 여유롭게 이동할 수 있습니다. 최단 경로보다 {time_diff}분 정도 더 소요되지만, 체감 스트레스가 적습니다."
-            elif avg_congestion < 0.6:
-                return f"이 경로는 주요 구간의 혼잡도가 낮아 상대적으로 편안하게 이동할 수 있습니다. 최단 경로 대비 {time_diff}분 추가 소요됩니다."
+            # 시간 차이 표현
+            if time_diff == 0:
+                time_text = "최단 경로와 동일한 시간이 소요됩니다"
             else:
-                return f"이 경로는 최단 경로 대비 {time_diff}분 추가 소요되지만, 일부 구간에서 혼잡도를 피할 수 있습니다."
+                time_text = f"최단 경로보다 {time_diff}분 정도 더 소요됩니다"
+            
+            if avg_congestion < 0.4:
+                return f"이 경로는 평균 혼잡도가 낮아 여유롭게 이동할 수 있습니다. {time_text}."
+            elif avg_congestion < 0.6:
+                return f"이 경로는 주요 구간의 혼잡도가 낮아 상대적으로 편안하게 이동할 수 있습니다. {time_text}."
+            else:
+                return f"이 경로는 일부 구간에서 혼잡도를 피할 수 있습니다. {time_text}."
