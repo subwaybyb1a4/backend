@@ -1,5 +1,8 @@
 """
-Route Congestion API 테스트 스크립트 (FAISS 제거/혼잡 RAG 검증용)
+🚀 Route Congestion API 테스트 스크립트
+- 헬스 체크
+- 단일 경로 분석
+- 배치 경로 분석
 """
 
 import requests
@@ -7,24 +10,29 @@ import json
 
 BASE_URL = "http://localhost:8000"
 
-
+# =========================
+# 헬스 체크
+# =========================
 def test_health_check():
-    print("=" * 50)
+    print("="*50)
     print("🔍 헬스 체크 테스트")
-    print("=" * 50)
-
+    print("="*50)
+    
+    response = requests.get(f"{BASE_URL}/health")
+    print(f"상태 코드: {response.status_code}")
     try:
-        response = requests.get(f"{BASE_URL}/health")
-        print(f"상태 코드: {response.status_code}")
         print(f"응답: {json.dumps(response.json(), ensure_ascii=False, indent=2)}\n")
     except Exception as e:
-        print(f"❌ 헬스 체크 실패: {e}\n")
+        print(f"응답 JSON 파싱 실패: {e}\n")
 
 
+# =========================
+# 단일 경로 분석
+# =========================
 def test_analyze_single_route():
-    print("=" * 50)
-    print("📍 단일 경로 분석 테스트 - 신도림 환승 피크")
-    print("=" * 50)
+    print("="*50)
+    print("📍 단일 경로 분석 테스트")
+    print("="*50)
 
     request_data = {
         "route": {
@@ -40,28 +48,29 @@ def test_analyze_single_route():
         "time_str": "07:55"
     }
 
+    response = requests.post(
+        f"{BASE_URL}/api/routes/analyze",
+        json=request_data,
+        headers={"Content-Type": "application/json"}
+    )
+
+    print(f"상태 코드: {response.status_code}")
     try:
-        response = requests.post(
-            f"{BASE_URL}/api/routes/analyze",
-            json=request_data,
-            headers={"Content-Type": "application/json"}
-        )
-        print(f"상태 코드: {response.status_code}")
-        if response.status_code == 200:
-            print(f"응답:\n{json.dumps(response.json(), ensure_ascii=False, indent=2)}\n")
-        else:
-            print(f"❌ 오류 발생: {response.text}\n")
+        result = response.json()
+        print(f"응답:\n{json.dumps(result, ensure_ascii=False, indent=2)}\n")
     except Exception as e:
-        print(f"❌ 단일 경로 분석 실패: {e}\n")
+        print(f"응답 JSON 파싱 실패: {e}\n")
 
 
+# =========================
+# 배치 경로 분석
+# =========================
 def test_analyze_batch_routes():
-    print("=" * 50)
-    print("📊 배치 경로 분석 테스트 - 혼잡 RAG 검증")
-    print("=" * 50)
+    print("="*50)
+    print("📊 배치 경로 분석 테스트")
+    print("="*50)
 
     request_data = [
-        # 🔥 고속터미널 환승 매우 혼잡
         {
             "route": {
                 "route_id": "route_terminal_peak",
@@ -74,7 +83,6 @@ def test_analyze_batch_routes():
             },
             "day": "평일"
         },
-        # 🟡 강남 하차 보통 케이스
         {
             "route": {
                 "route_id": "route_gangnam_normal",
@@ -85,7 +93,6 @@ def test_analyze_batch_routes():
             },
             "day": "평일"
         },
-        # 🔥 가산디지털단지 출근 폭주 케이스
         {
             "route": {
                 "route_id": "route_gasan_peak",
@@ -100,40 +107,35 @@ def test_analyze_batch_routes():
         }
     ]
 
+    response = requests.post(
+        f"{BASE_URL}/api/routes/analyze-batch",
+        json=request_data,
+        headers={"Content-Type": "application/json"}
+    )
+
+    print(f"상태 코드: {response.status_code}")
     try:
-        response = requests.post(
-            f"{BASE_URL}/api/routes/analyze-batch",
-            json=request_data,
-            headers={"Content-Type": "application/json"}
-        )
-        print(f"상태 코드: {response.status_code}")
-
-        if response.status_code != 200:
-            print(f"❌ 오류 발생: {response.text}\n")
-            return
-
         result = response.json()
-
-        total_routes = result.get("total_routes", len(result.get("routes", [])))
-        recommendation = result.get("recommendation", None)
-
-        print(f"\n총 분석된 경로: {total_routes}")
-        print(f"추천 경로: {recommendation}")
-
-        print(f"\n상세 결과:")
-        for route in result.get("routes", []):
-            print(f"\n  🚇 {route['route_id']}")
-            print(f"    - 총 소요시간: {route['total_time']}분")
-            print(f"    - 혼잡도 점수: {route['congestion_score']}")
-            print(f"    - 혼잡도 레벨: {route['congestion_level']}")
-            print(f"    - 환승 횟수: {route['num_transfers']}")
-            print(f"    - LLM 설명: {route['llm_description']}")
-        print()
-
+        if response.status_code == 200:
+            print(f"\n총 분석된 경로: {result['total_routes']}")
+            print(f"추천 경로: {result['recommendation']}\n")
+            for route in result["routes"]:
+                print(f"🚇 {route['route_id']}")
+                print(f"  - 총 소요시간: {route['total_time']}분")
+                print(f"  - 혼잡도 점수: {route['congestion_score']}")
+                print(f"  - 혼잡도 레벨: {route['congestion_level']}")
+                print(f"  - 환승 횟수: {route['num_transfers']}")
+                print(f"  - LLM 설명: {route['llm_description']}")
+                print()
+        else:
+            print(f"❌ 오류 발생: {result}")
     except Exception as e:
-        print(f"❌ 배치 경로 분석 실패: {e}\n")
+        print(f"응답 JSON 파싱 실패: {e}\n")
 
 
+# =========================
+# 메인 실행
+# =========================
 if __name__ == "__main__":
     print("\n🚀 Route Congestion API 테스트 시작\n")
 
@@ -143,11 +145,10 @@ if __name__ == "__main__":
         if response.status_code == 200:
             print("✅ API 서버 연결 성공\n")
         else:
-            print(f"❌ 서버 응답 오류: {response.status_code}")
-            exit(1)
+            print(f"❌ 서버 응답 이상: 상태 코드 {response.status_code}")
+            print(response.text)
     except Exception as e:
-        print(f"❌ API 서버에 연결할 수 없습니다: {e}")
-        print("먼저 `python route_api.py`로 서버를 시작하세요.\n")
+        print(f"❌ 서버 연결 실패: {e}")
         exit(1)
 
     # 테스트 실행
@@ -155,4 +156,4 @@ if __name__ == "__main__":
     test_analyze_single_route()
     test_analyze_batch_routes()
 
-    print("\n✅ Route Congestion API 테스트 완료!\n")
+    print("\n✅ 테스트 완료\n")

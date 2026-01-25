@@ -17,7 +17,8 @@ from dotenv import load_dotenv
 
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
-from langchain.schema import Document
+from langchain_core.documents import Document
+
 
 
 env_path = Path(__file__).parent / ".env"
@@ -53,25 +54,45 @@ else:
 app = FastAPI(title="Route Congestion API")
 
 # =========================
-# 혼잡 참고 RAG 로드
+# 혼잡 참고 RAG 대체 (FAISS 없이)
 # =========================
-RAG_PATH = Path(__file__).parent / "congestion_faiss"
+RAG_RULES_PATH = Path(__file__).parent / "congestion_rules.txt"
 
-if RAG_PATH.exists():
-    try:
-        embeddings = OpenAIEmbeddings(
-            api_key=AZURE_OPENAI_API_KEY,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            api_version=AZURE_OPENAI_API_VERSION
-        )
-        congestion_vectorstore = FAISS.load_local(str(RAG_PATH), embeddings)
-        print("✅ 혼잡 RAG 벡터 DB 로드 완료")
-    except Exception as e:
-        print(f"⚠️ 혼잡 RAG 로드 실패: {e}")
-        congestion_vectorstore = None
+if RAG_RULES_PATH.exists():
+    with open(RAG_RULES_PATH, "r", encoding="utf-8") as f:
+        congestion_rules_text = f.read()
+    # 규칙을 chunk 단위로 분할
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    congestion_chunks = splitter.create_documents([congestion_rules_text])
+    print(f"📄 혼잡 규칙 chunk 수: {len(congestion_chunks)}")
 else:
-    print("ℹ️ 혼잡 RAG DB 없음. 규칙 기반만 사용")
-    congestion_vectorstore = None
+    congestion_chunks = []
+    print("⚠️ congestion_rules.txt 없음. 규칙 기반만 사용")
+
+def retrieve_congestion_rules(route: Route):
+    """FAISS 없이 간단 키워드 검색으로 혼잡 참고 chunk 반환"""
+    if not congestion_chunks:
+        return ""
+
+    keywords = []
+    for seg in route.segments:
+        if seg.is_transfer or int(seg.time_str.split(":")[0]) in [7, 8, 9, 18, 19]:
+            keywords.append(f"{seg.time_str} {seg.station} {seg.line} 환승")
+
+    keywords = list(dict.fromkeys(keywords))  # 중복 제거
+
+    retrieved_texts = []
+    for kw in keywords[:3]:  # 최대 3개만
+        for chunk in congestion_chunks:
+            if kw.lower() in chunk.page_content.lower():
+                retrieved_texts.append(chunk.page_content)
+
+    if not retrieved_texts and congestion_chunks:
+        retrieved_texts.append(congestion_chunks[0].page_content)
+
+    return "\n".join(retrieved_texts)
+
 
 
 # =========================
@@ -223,31 +244,7 @@ def short_segment_penalty(route):
     count = sum(1 for s in route.segments if s.travel_time < 3)
     return count * 15
 
-def retrieve_congestion_rules(route: Route):
-    """RAG에서 혼잡 참고 룰 검색"""
-    if congestion_vectorstore is None:
-        return ""
 
-    queries = []
-    for seg in route.segments:
-        if seg.is_transfer or int(seg.time_str.split(":")[0]) in [7, 8, 9, 18, 19]:
-            q = f"{seg.time_str} {seg.station} {seg.line} 환승 혼잡"
-            queries.append(q)
-
-    # 중복 제거 + 최대 3개만 사용
-    queries = list(dict.fromkeys(queries))[:3]
-
-    retrieved_texts = []
-
-    for q in queries:
-        try:
-            docs = congestion_vectorstore.similarity_search(q, k=2)
-            for d in docs:
-                retrieved_texts.append(d.page_content)
-        except Exception as e:
-            print(f"⚠️ RAG 검색 실패 ({q}): {e}")
-
-    return "\n".join(retrieved_texts)
 
 
 # =========================
