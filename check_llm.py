@@ -1,4 +1,4 @@
-import requests
+import requests 
 
 resp = requests.get("http://localhost:8000/api/v1/routes", params={"departure": "서울역", "arrival": "강남역"})
 data = resp.json()
