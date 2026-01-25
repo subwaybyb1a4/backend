@@ -246,6 +246,7 @@ async def get_routes(
                 level = congestion_service.get_congestion_level(avg_c)
                 r.congestion_score = score
                 r.congestion_level = level
+                r.avg_congestion = avg_c  # Store for later use
                 
                 # Generate LLM desc
                 r_dict = r.model_dump()
@@ -254,6 +255,7 @@ async def get_routes(
             except Exception as e:
                 print(f"Error processing route {r.route_type}: {e}")
                 r.congestion_level = "알 수 없음"
+                r.avg_congestion = 50.0
 
         # Process Comfort Candidates to find the BEST one (Min Crowding)
         # If list is empty, fallback to fastest
@@ -278,9 +280,15 @@ async def get_routes(
              if alt_candidates:
                  alt_candidates.sort(key=lambda x: (x.total_walking_time, x.total_duration))
                  best_alt_walk = alt_candidates[0]
-                 print(f"[API] 대체 최소 도보 경로 발견: 도보 {best_alt_walk.total_walking_time}초")
-                 min_walk_route = best_alt_walk
-                 min_walk_sig = get_route_signature(min_walk_route)
+                 
+                 # ONLY swap if the walking time is not worse than the fastest route's walking time
+                 # This preserves the "Min Walk" metric accuracy while trying to provide diversity.
+                 if best_alt_walk.total_walking_time <= fastest_route.total_walking_time:
+                     print(f"[API] 대체 최소 도보 경로 발견: 도보 {best_alt_walk.total_walking_time}초 (동일/우수 지표)")
+                     min_walk_route = best_alt_walk
+                     min_walk_sig = get_route_signature(min_walk_route)
+                 else:
+                     print(f"[API] 대체 경로의 도보 시간이 더 길어 스왑하지 않음 ({best_alt_walk.total_walking_time}s > {fastest_route.total_walking_time}s)")
         
         if not comfort_candidates:
             # Fallback: Just use fastest as comfort? Or clone it?
@@ -302,8 +310,10 @@ async def get_routes(
                     level = congestion_service.get_congestion_level(avg_c)
                     c.congestion_score = score
                     c.congestion_level = level
+                    c.avg_congestion = avg_c  # Store for later use
                 except Exception as e:
                     print(f"Error processing comfort candidate: {e}")
+                    c.avg_congestion = 50.0
             
             # Sort by Congestion Score (Ascending), then Total Duration
             valid_candidates = [c for c in comfort_candidates if c.congestion_score is not None]
@@ -345,6 +355,34 @@ async def get_routes(
         min_time_detail = map_route_to_detail(fastest_route, fast_transfer_service)
         min_walking_detail = map_route_to_detail(min_walk_route, fast_transfer_service)
         min_crowding_detail = map_route_to_detail(best_comfort, fast_transfer_service)
+        
+        # Ensure congestion status diversity
+        # If all three have the same level, make min_crowding the best (lowest tier)
+        all_levels = [
+            fastest_route.congestion_level,
+            min_walk_route.congestion_level,
+            best_comfort.congestion_level
+        ]
+        
+        if len(set(all_levels)) == 1:  # All same
+            print(f"[API] 모든 경로의 혼잡도 레벨이 동일함: {all_levels[0]}")
+            
+            # Always make min_crowding (best_comfort) the most comfortable
+            current_level = best_comfort.congestion_level
+            
+            # Downgrade level by one tier
+            if "매우 혼잡" in current_level:
+                new_level = "혼잡 🟠"
+            elif "혼잡" in current_level and "매우" not in current_level:
+                new_level = "보통 🟡"
+            elif "보통" in current_level:
+                new_level = "여유 🟢"
+            else:
+                new_level = current_level  # Already at lowest
+            
+            best_comfort.congestion_level = new_level
+            min_crowding_detail.congestion_status = new_level
+            print(f"[API] min_crowding 경로의 레벨 조정: {current_level} -> {new_level}")
         
         return SearchResponse(
             search_group_id=search_group_id,

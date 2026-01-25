@@ -599,20 +599,18 @@ class ComfortRouteService:
             print(f"[ComfortRouteService] 총 {len(all_routes)}개 경로 중 {len(unique_routes)}개 고유 경로 발견")
             all_routes = unique_routes
             
-            # 3. 시간 제한 필터링 및 혼잡도 계산
+            # 3. 혼잡도 계산 (시간 제약 없음 - 혼잡도만 우선)
             filtered_routes = []
             for route in all_routes:
-                # 최단 경로 대비 +15분 이내인 경로만 선택
-                if route.total_duration <= max_duration:
-                    # 각 구간에 혼잡도 정보 추가
-                    segments_with_congestion = []
-                    total_congestion = 0.0
-                    
-                    # 경로 정보를 그대로 사용 (혼잡도 정보 제거)
-                    segments_with_congestion = route.segments
-                    
-                    # 편안함 근거 설명 생성 (LLM 사용)
-                    route_info = {
+                # 각 구간에 혼잡도 정보 추가
+                segments_with_congestion = []
+                total_congestion = 0.0
+                
+                # 경로 정보를 그대로 사용 (혼잡도 정보 제거)
+                segments_with_congestion = route.segments
+                
+                # 편안함 근거 설명 생성 (LLM 사용)
+                route_info = {
                         "segments": [
                             {
                                 "from_station": seg.from_station,
@@ -629,29 +627,29 @@ class ComfortRouteService:
                                 "to_line": transfer.to_line,
                                 "walking_time": transfer.walking_time
                             }
-                            for transfer in route.transfers
-                        ]
-                    }
-                    
-                    # LLM을 사용하여 편안함 설명 생성
-                    comfort_explanation = await self.llm_service.generate_comfort_explanation(
-                        route_info=route_info,
-                        congestion_data={},
-                        fastest_duration=fastest_route.total_duration,
-                        comfort_duration=route.total_duration
-                    )
-                    
-                    # 경로 생성
-                    route_with_congestion = Route(
-                        route_type=RouteType.COMFORT,
-                        total_duration=route.total_duration,
-                        total_walking_time=route.total_walking_time,
-                        segments=segments_with_congestion,
-                        transfers=route.transfers,
-                        comfort_explanation=comfort_explanation
-                    )
-                    
-                    filtered_routes.append(route_with_congestion)
+                        for transfer in route.transfers
+                    ]
+                }
+                
+                # LLM을 사용하여 편안함 설명 생성
+                comfort_explanation = await self.llm_service.generate_comfort_explanation(
+                    route_info=route_info,
+                    congestion_data={},
+                    fastest_duration=fastest_route.total_duration,
+                    comfort_duration=route.total_duration
+                )
+                
+                # 경로 생성
+                route_with_congestion = Route(
+                    route_type=RouteType.COMFORT,
+                    total_duration=route.total_duration,
+                    total_walking_time=route.total_walking_time,
+                    segments=segments_with_congestion,
+                    transfers=route.transfers,
+                    comfort_explanation=comfort_explanation
+                )
+                
+                filtered_routes.append(route_with_congestion)
             
             # 총 소요 시간 기준으로 정렬 (짧을수록 좋음)
             filtered_routes.sort(key=lambda r: r.total_duration)

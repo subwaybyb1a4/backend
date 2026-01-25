@@ -51,6 +51,8 @@ class RouteSegment(BaseModel):
 
 class Route(BaseModel):
     """경로 정보"""
+    model_config = {"extra": "allow"}  # Allow dynamic fields like avg_congestion
+    
     route_type: RouteType = Field(..., description="경로 타입")
     total_duration: int = Field(..., description="총 소요 시간 (초)")
     total_walking_time: int = Field(..., description="총 도보 시간 (초)")
