@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime, timedelta
 from app.schemas.route import (
     RouteResponse, StationInfo, Route, RouteType, 
-    SearchResponse, RouteDetail, SegmentResponse, SegmentType
+    SearchResponse, RouteDetail, SegmentResponse, SegmentType, RouteRequest
 )
 from app.services.route_service import RouteService, ComfortRouteService
 from app.services.odsay_service import ODSayService
@@ -202,11 +202,10 @@ def map_route_to_detail(route: Route, fast_transfer_service: FastTransferService
         summary=summary
     )
 
-
-@router.get("", response_model=SearchResponse)
+# 1. @router.get("") 대신 @router.post("/search")로 변경하여 주소와 방식을 맞춥니다.
+@router.post("/search", response_model=SearchResponse)
 async def get_routes(
-    departure: str = Query(..., description="출발역 이름 또는 ID"),
-    arrival: str = Query(..., description="도착역 이름 또는 ID"),
+    request: RouteRequest, # <--- Query 대신 RouteRequest 모델을 사용합니다!
     route_service: RouteService = Depends(get_route_service),
     comfort_route_service: ComfortRouteService = Depends(get_comfort_route_service),
     fast_transfer_service: FastTransferService = Depends(get_fast_transfer_service)
@@ -215,6 +214,11 @@ async def get_routes(
     경로 조회 API (Structured Response)
     """
     try:
+        # 1. 프론트엔드가 보낸 JSON 데이터에서 값을 꺼냅니다.
+        from_station = request.from_station
+        to_station = request.to_station
+        departure_time = request.searched_time
+        
         # Generate Search Group ID
         search_group_id = str(uuid.uuid4())
         
@@ -223,13 +227,13 @@ async def get_routes(
         llm_service = LLMService()
 
         # 1. Get Fastest Route
-        fastest_route = await route_service.get_fastest_route(departure, arrival, None)
+        fastest_route = await route_service.get_fastest_route(from_station, to_station, departure_time)
         
         # 2. Get Min Walk Route
-        min_walk_route = await route_service.get_min_walk_route(departure, arrival, None)
+        min_walk_route = await route_service.get_min_walk_route(from_station, to_station, departure_time)
         
         # 3. Get Comfort Route Candidates (List[Route])
-        comfort_candidates = await comfort_route_service.get_comfort_route(departure, arrival, None)
+        comfort_candidates = await comfort_route_service.get_comfort_route(from_station, to_station, departure_time)
         
         # Process Fastest & Min Walk
         # Calculate congestion and LLM for them
@@ -249,7 +253,7 @@ async def get_routes(
                 r.avg_congestion = avg_c  # Store for later use
                 
                 # Generate LLM desc
-                r_dict = r.model_dump()
+                r_dict = r.model_dump() if hasattr(r, 'model_dump') else r # <- 만약 r이 이미 객체라면 아래와 같이 확실하게 변환 
                 desc = await llm_service.generate_route_explanation(r_dict, score, level, details)
                 r.llm_description = desc
             except Exception as e:

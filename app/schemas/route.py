@@ -67,9 +67,12 @@ class Route(BaseModel):
 
 class RouteRequest(BaseModel):
     """경로 조회 요청"""
-    departure_station: str = Field(..., description="출발역 이름 또는 ID")
-    arrival_station: str = Field(..., description="도착역 이름 또는 ID")
-    departure_time: Optional[str] = Field(None, description="출발 시간 (ISO 8601 형식, 선택사항)")
+#    departure_station: str = Field(..., description="출발역 이름 또는 ID")
+#    arrival_station: str = Field(..., description="도착역 이름 또는 ID")
+#    departure_time: Optional[str] = Field(None, description="출발 시간 (ISO 8601 형식, 선택사항)")
+    from_station: str = Field(..., description="출발역 이름 또는 ID")
+    to_station: str = Field(..., description="도착역 이름 또는 ID")
+    searched_time: Optional[str] = Field(None, description="출발 시간 (ISO 8601 형식, 선택사항)")
 
 
 class RouteResponse(BaseModel):

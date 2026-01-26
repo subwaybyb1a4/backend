@@ -22,10 +22,14 @@ app.add_middleware(
 )
 
 # API 라우터 등록
-app.include_router(routes.router, prefix="/api/v1")
-app.include_router(crowding.router, prefix="/api/v1")
-app.include_router(explain.router, prefix="/api/v1")
-app.include_router(favorites.router, prefix="/api/v1")
+# app.include_router(routes.router, prefix="/api/v1")
+# app.include_router(crowding.router, prefix="/api/v1")
+# app.include_router(explain.router, prefix="/api/v1")
+# app.include_router(favorites.router, prefix="/api/v1")
+app.include_router(routes.router, prefix="/api")
+app.include_router(crowding.router, prefix="/api")
+app.include_router(explain.router, prefix="/api")
+app.include_router(favorites.router, prefix="/api")
 
 
 @app.get("/")
